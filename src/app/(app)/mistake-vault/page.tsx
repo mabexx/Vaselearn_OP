@@ -1,9 +1,8 @@
-
 'use client';
 
 import { useMemo, useState } from 'react';
-import { collection } from 'firebase/firestore';
-import { useUser, useFirestore, useCollection, useMemoFirebase } from '@/firebase';
+import { collection, onSnapshot, query } from 'firebase/firestore';
+import { useUser, useFirestore } from '@/firebase';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,6 +12,9 @@ import { Mistake } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import DiagnosisAccordion from '@/components/DiagnosisAccordion';
+import { useEffect } from 'react';
+
 
 type SortOption = 'createdAt' | 'subject';
 
@@ -20,12 +22,31 @@ export default function MistakeVaultPage() {
   const { user } = useUser();
   const firestore = useFirestore();
   const [sortBy, setSortBy] = useState<SortOption>('createdAt');
+  const [mistakes, setMistakes] = useState<Mistake[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const mistakesCollection = useMemoFirebase(() => 
-    user ? collection(firestore, 'users', user.uid, 'mistakes') : null
-  , [firestore, user]);
+  // Use a real-time listener to get mistakes and their diagnoses
+  useEffect(() => {
+    if (!user) {
+      setIsLoading(false);
+      return;
+    };
 
-  const { data: mistakes, isLoading } = useCollection<Mistake>(mistakesCollection);
+    const q = query(collection(firestore, 'users', user.uid, 'mistakes'));
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const mistakesData: Mistake[] = [];
+      querySnapshot.forEach((doc) => {
+        mistakesData.push({ id: doc.id, ...doc.data() } as Mistake);
+      });
+      setMistakes(mistakesData);
+      setIsLoading(false);
+    }, (error) => {
+        console.error("Error fetching mistakes:", error);
+        setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user, firestore]);
 
   const sortedMistakes = useMemo(() => {
     if (!mistakes) return [];
@@ -43,6 +64,36 @@ export default function MistakeVaultPage() {
     });
     return sorted;
   }, [mistakes, sortBy]);
+
+  // Handle retrying a diagnosis
+  const handleRetryDiagnosis = async (mistakeId: string) => {
+     const mistake = mistakes.find(m => m.id === mistakeId);
+     if (!mistake || !user) return;
+
+     // Optimistically update the UI to show loading
+     setMistakes(prev => prev.map(m => m.id === mistakeId ? { ...m, diagnosis: undefined } : m));
+
+     try {
+         await fetch('/api/diagnose', {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({
+                 mistakeId: mistake.id,
+                 user,
+                 question: mistake.question,
+                 user_answer: mistake.userAnswer,
+                 correct_answer: mistake.correctAnswer,
+                 subject: mistake.topic,
+                 topic: mistake.topic,
+                 difficulty: mistake.difficulty,
+             }),
+         });
+         // The real-time listener will automatically update the UI with the new diagnosis
+     } catch (error) {
+         console.error(`Failed to retry diagnosis for mistake ${mistakeId}:`, error);
+         // The real-time listener will eventually get the error state from the backend
+     }
+  };
 
   return (
     <div className="space-y-6">
@@ -123,6 +174,7 @@ export default function MistakeVaultPage() {
                         <Badge className="bg-blue-900 text-blue-300">Difficulty: {mistake.difficulty}</Badge>
                         {mistake.tags && mistake.tags.map(tag => <Badge key={tag} className="bg-purple-900 text-purple-300">{tag}</Badge>)}
                       </div>
+                      <DiagnosisAccordion mistakeId={mistake.id} diagnosis={mistake.diagnosis} onRetry={handleRetryDiagnosis}/>
                   </div>
                 </AccordionContent>
               </AccordionItem>

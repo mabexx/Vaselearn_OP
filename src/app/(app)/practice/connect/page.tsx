@@ -8,6 +8,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { validateApiKey, saveSettings } from '@/lib/aistudio';
+import { useUser, useFirestore } from '@/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
 
 function ConnectPageInner() {
   const [apiKey, setApiKey] = useState('');
@@ -15,6 +17,8 @@ function ConnectPageInner() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { user } = useUser();
+  const firestore = useFirestore();
 
   const handleConnect = async () => {
     setLoading(true);
@@ -26,10 +30,21 @@ function ConnectPageInner() {
         return;
     }
 
+    if (!user || !firestore) {
+        setError('User not authenticated. Please sign in again.');
+        setLoading(false);
+        return;
+    }
+
     try {
         const isValid = await validateApiKey(apiKey);
 
         if (isValid) {
+            const userDocRef = doc(firestore, 'users', user.uid);
+            await updateDoc(userDocRef, {
+                googleAiApiKey: apiKey,
+            });
+
             saveSettings(apiKey);
             const params = new URLSearchParams(searchParams.toString());
             router.push(`/practice/quiz?${params.toString()}`);

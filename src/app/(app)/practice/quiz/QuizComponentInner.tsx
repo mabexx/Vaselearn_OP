@@ -191,15 +191,30 @@ export default function QuizComponentInner({
 
         if (mistakes.length > 0 && apiKey) {
             const tags = await generateTagsForTopic(apiKey, topic);
-            const batch = writeBatch(db);
-            mistakes.forEach(mistake => {
-                const mistakeRef = doc(collection(db, `users/${user.uid}/mistakes`));
-                batch.set(mistakeRef, { ...mistake, tags });
-            });
-            await batch.commit();
+            for (const mistake of mistakes) {
+                try {
+                    const mistakeWithTags = { ...mistake, tags };
+                    const mistakeRef = await addDoc(collection(db, `users/${user.uid}/mistakes`), mistakeWithTags);
+
+                    // Non-blocking call to the diagnosis API
+                    user.getIdToken().then(token => {
+                        fetch('/api/diagnose', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ mistakeId: mistakeRef.id })
+                        }).catch(apiError => console.error('API call to /api/diagnose failed:', apiError));
+                    }).catch(tokenError => console.error('Error getting user token:', tokenError));
+
+                } catch (dbError) {
+                    console.error("Error saving individual mistake:", dbError);
+                }
+            }
         }
     } catch (error) {
-        console.error("Error saving results to Firestore:", error);
+        console.error("Error during the saving process:", error);
         setLoadingMessage('Could not save your results due to a database error.');
     } finally {
         setIsSaving(false);

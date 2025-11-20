@@ -82,6 +82,7 @@ export interface Mistake {
     practiceSessionId: string;
     tags: string[];
     difficulty: string;
+    diagnosis?: any; // Can be the diagnosis object, an error object, or undefined
 }
 
 export interface QuizFeedback {

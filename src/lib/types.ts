@@ -140,3 +140,36 @@ export interface VLSClient {
         }[];
     };
 }
+
+// A single step in any solution, correct or incorrect
+export interface AnalysisStep {
+  step: number;
+  explanation: string;
+  isError?: boolean; // Highlight this step as the point of error
+  errorDescription?: string; // Explain what went wrong here
+}
+
+// The complete, correct solution pathway
+export interface CorrectSolution {
+  answer: string;
+  steps: AnalysisStep[];
+}
+
+// A possible pathway leading to a wrong answer
+export interface ErrorPathway {
+  pathwayDescription: string; // A summary of this particular error path
+  steps: AnalysisStep[];
+}
+
+// The analysis for a single incorrect answer
+export interface CounterfactualAnalysis {
+  wrongAnswer: string;
+  errorType: string; // e.g., "Sign Error", "Formula Misapplication"
+  possiblePathways: ErrorPathway[];
+}
+
+// The complete analysis for a single quiz question
+export interface QuizAnalysis {
+  correctSolution: CorrectSolution;
+  counterfactualAnalyses: CounterfactualAnalysis[];
+}

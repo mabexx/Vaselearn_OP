@@ -5,7 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getSettings } from '@/lib/aistudio';
-import { QuizQuestion, Mistake, PracticeSession } from '@/lib/types';
+import { QuizQuestion, Mistake, PracticeSession, QuizAnalysis } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -14,6 +14,7 @@ import { useUser } from '@/firebase';
 import QuestionMultipleChoice from '@/components/quiz/QuestionMultipleChoice';
 import QuestionTrueFalse from '@/components/quiz/QuestionTrueFalse';
 import QuestionCaseBased from '@/components/quiz/QuestionCaseBased';
+import QuizAnalysisDisplay from '@/components/quiz/QuizAnalysis';
 import { CheckCircle, XCircle } from 'lucide-react';
 
 export default function QuizComponentInner({
@@ -42,6 +43,9 @@ export default function QuizComponentInner({
   const [isComplete, setIsComplete] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [analyses, setAnalyses] = useState<(QuizAnalysis | null)[]>([]);
+  const [analysisLoading, setAnalysisLoading] = useState<number | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const router = useRouter();
   const { user, isUserLoading } = useUser();
   const db = getFirestore();
@@ -74,6 +78,53 @@ export default function QuizComponentInner({
       throw new Error('Failed to generate questions. The AI may be experiencing issues.');
     }
   }, [topic, limit, clientType, questionType, difficulty]);
+
+  const generateAnalysis = useCallback(async (key: string, question: QuizQuestion): Promise<QuizAnalysis> => {
+    if (question.type !== 'multiple_choice') {
+      throw new Error('Analysis is only available for multiple-choice questions.');
+    }
+    const genAI = new GoogleGenerativeAI(key);
+    const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+    const correctAnswer = question.answer;
+    const wrongAnswers = question.options.filter(opt => opt !== correctAnswer);
+    const prompt = `
+      You are an expert tutor for Physics, Chemistry, and Mathematics.
+      Analyze the following multiple-choice question and generate a detailed analysis.
+
+      **Question:** ${question.question}
+      **Correct Answer:** ${correctAnswer}
+      **Wrong Answers:** ${wrongAnswers.join(', ')}
+
+      **Instructions:**
+      Generate a response in a valid JSON object format with two main keys: "correctSolution" and "counterfactualAnalyses".
+
+      1.  **"correctSolution"**: An object with:
+          *   "answer": The correct answer string.
+          *   "steps": An array of objects, each with "step" (number) and "explanation" (string) for the step-by-step solution.
+
+      2.  **"counterfactualAnalyses"**: An array of objects, one for each wrong answer. Each object should have:
+          *   "wrongAnswer": The incorrect answer string.
+          *   "errorType": A concise classification of the mistake (e.g., "Sign Error", "Formula Misapplication", "Unit Conversion Error", "Conceptual Misunderstanding").
+          *   "possiblePathways": An array of 1 to 3 objects, where each object represents a realistic pathway a student might take to arrive at this wrong answer. Each pathway object must have:
+              *   "pathwayDescription": A brief summary of the flawed logic in this pathway.
+              *   "steps": An array of step objects, similar to the correct solution. One of these steps MUST be marked as the error, with "isError": true, and an "errorDescription" explaining what went wrong at that point.
+
+      Return ONLY the valid JSON object.
+    `;
+    try {
+      const result = await aiModel.generateContent(prompt);
+      const { response } = result;
+      const text = response.text();
+      let jsonString = text.trim();
+      if (jsonString.startsWith('```json')) {
+        jsonString = jsonString.substring(7, jsonString.length - 3).trim();
+      }
+      return JSON.parse(jsonString) as QuizAnalysis;
+    } catch (err) {
+      console.error('Failed to generate or parse AI analysis response:', err);
+      throw new Error('Failed to generate analysis. The AI may be experiencing issues.');
+    }
+  }, []);
 
   useEffect(() => {
     if (isUserLoading) {
@@ -211,6 +262,25 @@ export default function QuizComponentInner({
     savePracticeSessionAndMistakes();
   };
 
+  const handleAnalysis = async (index: number) => {
+    if (apiKey && questions[index]?.type === 'multiple_choice') {
+      setAnalysisLoading(index);
+      setAnalysisError(null);
+      try {
+        const result = await generateAnalysis(apiKey, questions[index]);
+        setAnalyses(prev => {
+          const newAnalyses = [...prev];
+          newAnalyses[index] = result;
+          return newAnalyses;
+        });
+      } catch (error) {
+        setAnalysisError(error instanceof Error ? error.message : 'An unknown error occurred.');
+      } finally {
+        setAnalysisLoading(null);
+      }
+    }
+  };
+
   if (loading || isUserLoading || questions.length === 0) {
     return (
       <div className="flex flex-col justify-center items-center min-h-screen text-lg font-medium p-4 text-center text-gray-300">
@@ -278,6 +348,23 @@ export default function QuizComponentInner({
                            <p>Correct answer: {String(q.answer)}</p>
                          </div>
                       )}
+                      {q.type === 'multiple_choice' && (
+                        <div className="mt-4">
+                          <Button
+                            onClick={() => handleAnalysis(index)}
+                            disabled={analysisLoading === index}
+                            variant="secondary"
+                            className="w-full sm:w-auto"
+                          >
+                            {analysisLoading === index ? 'Analyzing...' : 'Analyze Question'}
+                          </Button>
+                        </div>
+                      )}
+                      {analyses[index] && (
+                        <div className="mt-4">
+                          <QuizAnalysisDisplay analysis={analyses[index]} />
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -296,6 +383,13 @@ export default function QuizComponentInner({
                 <Button onClick={() => setShowSummary(true)} variant="outline" className="border-gray-600 hover:bg-gray-700">Review Answers</Button>
               </CardFooter>
             </Card>
+          )}
+          {analysisError && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Error</AlertTitle>
+              <AlertDescription>{analysisError}</AlertDescription>
+            </Alert>
           )}
         </div>
       )}
